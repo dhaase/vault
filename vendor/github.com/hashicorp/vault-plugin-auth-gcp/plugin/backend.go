@@ -8,12 +8,11 @@ import (
 	"sync"
 
 	"github.com/hashicorp/go-cleanhttp"
-	"github.com/hashicorp/vault-plugin-auth-gcp/plugin/util"
+	"github.com/hashicorp/go-gcp-common/gcputil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 	"github.com/hashicorp/vault/version"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/google"
 	"google.golang.org/api/compute/v1"
 	"google.golang.org/api/iam/v1"
 )
@@ -33,9 +32,9 @@ type GcpAuthBackend struct {
 }
 
 // Factory returns a new backend as logical.Backend.
-func Factory(conf *logical.BackendConfig) (logical.Backend, error) {
+func Factory(ctx context.Context, conf *logical.BackendConfig) (logical.Backend, error) {
 	b := Backend()
-	if err := b.Setup(conf); err != nil {
+	if err := b.Setup(ctx, conf); err != nil {
 		return nil, err
 	}
 	return b, nil
@@ -58,6 +57,9 @@ func Backend() *GcpAuthBackend {
 			Unauthenticated: []string{
 				"login",
 			},
+			SealWrapStorage: []string{
+				"config",
+			},
 		},
 		Paths: framework.PathAppend(
 			[]*framework.Path{
@@ -70,7 +72,7 @@ func Backend() *GcpAuthBackend {
 	return b
 }
 
-func (b *GcpAuthBackend) invalidate(key string) {
+func (b *GcpAuthBackend) invalidate(_ context.Context, key string) {
 	switch key {
 	case "config":
 		b.Close()
@@ -86,7 +88,7 @@ func (b *GcpAuthBackend) Close() {
 	b.gceClient = nil
 }
 
-func (b *GcpAuthBackend) IAM(s logical.Storage) (*iam.Service, error) {
+func (b *GcpAuthBackend) IAM(ctx context.Context, s logical.Storage) (*iam.Service, error) {
 	b.clientMutex.RLock()
 	if b.iamClient != nil {
 		defer b.clientMutex.RUnlock()
@@ -99,7 +101,7 @@ func (b *GcpAuthBackend) IAM(s logical.Storage) (*iam.Service, error) {
 
 	// Check if client was created during lock switch.
 	if b.iamClient == nil {
-		err := b.initClients(s)
+		err := b.initClients(ctx, s)
 		if err != nil {
 			return nil, err
 		}
@@ -108,7 +110,7 @@ func (b *GcpAuthBackend) IAM(s logical.Storage) (*iam.Service, error) {
 	return b.iamClient, nil
 }
 
-func (b *GcpAuthBackend) GCE(s logical.Storage) (*compute.Service, error) {
+func (b *GcpAuthBackend) GCE(ctx context.Context, s logical.Storage) (*compute.Service, error) {
 	b.clientMutex.RLock()
 	if b.gceClient != nil {
 		defer b.clientMutex.RUnlock()
@@ -121,7 +123,7 @@ func (b *GcpAuthBackend) GCE(s logical.Storage) (*compute.Service, error) {
 
 	// Check if client was created during lock switch.
 	if b.gceClient == nil {
-		err := b.initClients(s)
+		err := b.initClients(ctx, s)
 		if err != nil {
 			return nil, err
 		}
@@ -132,23 +134,22 @@ func (b *GcpAuthBackend) GCE(s logical.Storage) (*compute.Service, error) {
 
 // Initialize attempts to create GCP clients from stored config.
 // It does not attempt to claim the client lock.
-func (b *GcpAuthBackend) initClients(s logical.Storage) (err error) {
-	config, err := b.config(s)
+func (b *GcpAuthBackend) initClients(ctx context.Context, s logical.Storage) (err error) {
+	config, err := b.config(ctx, s)
 	if err != nil {
 		return err
 	}
 
 	var httpClient *http.Client
 	if config == nil || config.Credentials == nil {
-		// Use Application Default Credentials
-		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, cleanhttp.DefaultClient())
-
-		httpClient, err = google.DefaultClient(ctx, b.oauthScopes...)
+		_, tknSrc, err := gcputil.FindCredentials("", ctx, b.oauthScopes...)
 		if err != nil {
 			return fmt.Errorf("credentials were not configured and fallback to application default credentials failed: %v", err)
 		}
+		cleanCtx := context.WithValue(context.Background(), oauth2.HTTPClient, cleanhttp.DefaultClient())
+		httpClient = oauth2.NewClient(cleanCtx, tknSrc)
 	} else {
-		httpClient, err = util.GetHttpClient(config.Credentials, b.oauthScopes...)
+		httpClient, err = gcputil.GetHttpClient(config.Credentials, b.oauthScopes...)
 		if err != nil {
 			return err
 		}

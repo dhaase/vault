@@ -1,15 +1,14 @@
 package gcpauth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
-	"github.com/hashicorp/vault-plugin-auth-gcp/plugin/util"
+	"github.com/hashicorp/go-gcp-common/gcputil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
-
-const warningACLReadAccess string = "Read access to this endpoint should be controlled via ACLs as it will return the configuration information as-is, including any passwords."
 
 func pathConfig(b *GcpAuthBackend) *framework.Path {
 	return &framework.Path{
@@ -38,8 +37,13 @@ If not specified, will use the OAuth2 library default. Useful for testing.`,
 	}
 }
 
-func (b *GcpAuthBackend) pathConfigWrite(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	config, err := b.config(req.Storage)
+func (b *GcpAuthBackend) pathConfigWrite(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	// Validate we didn't get extraneous fields
+	if err := validateFields(req, data); err != nil {
+		return nil, logical.CodedError(422, err.Error())
+	}
+
+	config, err := b.config(ctx, req.Storage)
 
 	if err != nil {
 		return nil, err
@@ -57,14 +61,18 @@ func (b *GcpAuthBackend) pathConfigWrite(req *logical.Request, data *framework.F
 		return nil, err
 	}
 
-	if err := req.Storage.Put(entry); err != nil {
+	if err := req.Storage.Put(ctx, entry); err != nil {
 		return nil, err
 	}
+
+	// Invalidate exisitng clients so they read the new configuration
+	b.Close()
+
 	return nil, nil
 }
 
-func (b *GcpAuthBackend) pathConfigRead(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	config, err := b.config(req.Storage)
+func (b *GcpAuthBackend) pathConfigRead(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	config, err := b.config(ctx, req.Storage)
 	if err != nil {
 		return nil, err
 	}
@@ -72,19 +80,27 @@ func (b *GcpAuthBackend) pathConfigRead(req *logical.Request, data *framework.Fi
 		return nil, nil
 	}
 
-	resp := &logical.Response{
-		Data: map[string]interface{}{
-			"client_email":          config.Credentials.ClientEmail,
-			"client_id":             config.Credentials.ClientId,
-			"private_key_id":        config.Credentials.PrivateKeyId,
-			"private_key":           config.Credentials.PrivateKey,
-			"project_id":            config.Credentials.ProjectId,
-			"google_certs_endpoint": config.GoogleCertsEndpoint,
-		},
+	resp := make(map[string]interface{})
+
+	if v := config.Credentials.ClientEmail; v != "" {
+		resp["client_email"] = v
+	}
+	if v := config.Credentials.ClientId; v != "" {
+		resp["client_id"] = v
+	}
+	if v := config.Credentials.PrivateKeyId; v != "" {
+		resp["private_key_id"] = v
+	}
+	if v := config.Credentials.ProjectId; v != "" {
+		resp["project_id"] = v
+	}
+	if v := config.GoogleCertsEndpoint; v != "" {
+		resp["google_certs_endpoint"] = v
 	}
 
-	resp.AddWarning(warningACLReadAccess)
-	return resp, nil
+	return &logical.Response{
+		Data: resp,
+	}, nil
 }
 
 const confHelpSyn = `Configure credentials used to query the GCP IAM API to verify authenticating service accounts`
@@ -99,15 +115,15 @@ iam AUTH:
 
 // gcpConfig contains all config required for the GCP backend.
 type gcpConfig struct {
-	Credentials         *util.GcpCredentials `json:"credentials" structs:"credentials" mapstructure:"credentials"`
-	GoogleCertsEndpoint string               `json:"google_certs_endpoint" structs:"google_certs_endpoint" mapstructure:"google_certs_endpoint"`
+	Credentials         *gcputil.GcpCredentials `json:"credentials"`
+	GoogleCertsEndpoint string                  `json:"google_certs_endpoint"`
 }
 
 // Update sets gcpConfig values parsed from the FieldData.
 func (config *gcpConfig) Update(data *framework.FieldData) error {
 	credentialsJson := data.Get("credentials").(string)
 	if credentialsJson != "" {
-		creds, err := util.Credentials(credentialsJson)
+		creds, err := gcputil.Credentials(credentialsJson)
 		if err != nil {
 			return fmt.Errorf("error reading google credentials from given JSON: %v", err)
 		}
@@ -127,9 +143,9 @@ func (config *gcpConfig) Update(data *framework.FieldData) error {
 
 // config reads the backend's gcpConfig from storage.
 // This assumes the caller has already obtained the backend's config lock.
-func (b *GcpAuthBackend) config(s logical.Storage) (*gcpConfig, error) {
+func (b *GcpAuthBackend) config(ctx context.Context, s logical.Storage) (*gcpConfig, error) {
 	config := &gcpConfig{}
-	entry, err := s.Get("config")
+	entry, err := s.Get(ctx, "config")
 
 	if err != nil {
 		return nil, err

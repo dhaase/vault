@@ -19,8 +19,8 @@ The DynamoDB storage backend is used to persist Vault's data in
 
 - **Community Supported** – the DynamoDB storage backend is supported by the
   community. While it has undergone review by HashiCorp employees, they may not
-  be as knowledgeable about the technology. If you encounter problems with them,
-  you may be referred to the original author.
+  be as knowledgeable about the technology. If you encounter problems with this
+  storage backend, you could be referred to the original author for support.
 
 ```hcl
 storage "dynamodb" {
@@ -39,9 +39,9 @@ see the [official AWS DynamoDB documentation][dynamodb-rw-capacity].
   endpoint. This can also be provided via the environment variable
   `AWS_DYNAMODB_ENDPOINT`.
 
-- `ha_enabled` `(bool: false)` – Specifies whether this backend should be used
-  to run Vault in high availability mode. This can also be provided via the
-  environment variable `DYNAMODB_HA_ENABLED`.
+- `ha_enabled` `(string: "false")` – Specifies whether this backend should be used
+  to run Vault in high availability mode. Valid values are "true" or "false". This
+  can also be provided via the environment variable `DYNAMODB_HA_ENABLED`.
 
 - `max_parallel` `(string: "128")` – Specifies the maximum number of concurrent
   requests.

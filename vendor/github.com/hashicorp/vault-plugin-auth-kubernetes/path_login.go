@@ -1,16 +1,18 @@
 package kubeauth
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"errors"
 	"fmt"
-	"time"
 
-	"github.com/SermoDigital/jose/crypto"
-	"github.com/SermoDigital/jose/jws"
-	"github.com/SermoDigital/jose/jwt"
+	"github.com/briankassouf/jose/crypto"
+	"github.com/briankassouf/jose/jws"
+	"github.com/briankassouf/jose/jwt"
+	"github.com/hashicorp/errwrap"
 	multierror "github.com/hashicorp/go-multierror"
+	"github.com/hashicorp/vault/helper/cidrutil"
 	"github.com/hashicorp/vault/helper/strutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -55,7 +57,7 @@ func pathLogin(b *kubeAuthBackend) *framework.Path {
 
 // pathLogin is used to authenticate to this backend
 func (b *kubeAuthBackend) pathLogin() framework.OperationFunc {
-	return func(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	return func(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 		roleName := data.Get("role").(string)
 		if len(roleName) == 0 {
 			return logical.ErrorResponse("missing role"), nil
@@ -69,7 +71,7 @@ func (b *kubeAuthBackend) pathLogin() framework.OperationFunc {
 		b.l.RLock()
 		defer b.l.RUnlock()
 
-		role, err := b.role(req.Storage, roleName)
+		role, err := b.role(ctx, req.Storage, roleName)
 		if err != nil {
 			return nil, err
 		}
@@ -77,7 +79,12 @@ func (b *kubeAuthBackend) pathLogin() framework.OperationFunc {
 			return logical.ErrorResponse(fmt.Sprintf("invalid role name \"%s\"", roleName)), nil
 		}
 
-		config, err := b.config(req.Storage)
+		// Check for a CIDR match.
+		if req.Connection != nil && !cidrutil.RemoteAddrIsOk(req.Connection.RemoteAddr, role.BoundCIDRs) {
+			return logical.ErrorResponse("request originated from invalid CIDR"), nil
+		}
+
+		config, err := b.config(ctx, req.Storage)
 		if err != nil {
 			return nil, err
 		}
@@ -114,20 +121,14 @@ func (b *kubeAuthBackend) pathLogin() framework.OperationFunc {
 					"service_account_secret_name": serviceAccount.SecretName,
 					"role": roleName,
 				},
-				DisplayName: serviceAccount.Name,
+				DisplayName: fmt.Sprintf("%s-%s", serviceAccount.Namespace, serviceAccount.Name),
 				LeaseOptions: logical.LeaseOptions{
 					Renewable: true,
 					TTL:       role.TTL,
+					MaxTTL:    role.MaxTTL,
 				},
+				BoundCIDRs: role.BoundCIDRs,
 			},
-		}
-
-		// If 'Period' is set, use the value of 'Period' as the TTL.
-		// Otherwise, set the normal TTL.
-		if role.Period > time.Duration(0) {
-			resp.Auth.TTL = role.Period
-		} else {
-			resp.Auth.TTL = role.TTL
 		}
 
 		return resp, nil
@@ -137,7 +138,7 @@ func (b *kubeAuthBackend) pathLogin() framework.OperationFunc {
 // aliasLookahead returns the alias object with the SA UID from the JWT
 // Claims.
 func (b *kubeAuthBackend) aliasLookahead() framework.OperationFunc {
-	return func(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	return func(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 		jwtStr := data.Get("jwt").(string)
 		if len(jwtStr) == 0 {
 			return logical.ErrorResponse("missing jwt"), nil
@@ -266,7 +267,7 @@ func (b *kubeAuthBackend) parseAndValidateJWT(jwtStr string, role *roleStorageEn
 			// if the error is a failure to verify or a signing method mismatch
 			// continue onto the next cert, storing the error to be returned if
 			// this is the last cert.
-			validationErr = multierror.Append(validationErr, err)
+			validationErr = multierror.Append(validationErr, errwrap.Wrapf("failed to validate JWT: {{err}}", err))
 			continue
 		default:
 			return nil, err
@@ -309,34 +310,31 @@ func (s *serviceAccount) lookup(jwtStr string, tr tokenReviewer) error {
 }
 
 // Invoked when the token issued by this backend is attempting a renewal.
-func (b *kubeAuthBackend) pathLoginRenew(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-	roleName := req.Auth.InternalData["role"].(string)
-	if roleName == "" {
-		return nil, fmt.Errorf("failed to fetch role_name during renewal")
-	}
+func (b *kubeAuthBackend) pathLoginRenew() framework.OperationFunc {
+	return func(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+		roleName := req.Auth.InternalData["role"].(string)
+		if roleName == "" {
+			return nil, fmt.Errorf("failed to fetch role_name during renewal")
+		}
 
-	b.l.RLock()
-	defer b.l.RUnlock()
+		b.l.RLock()
+		defer b.l.RUnlock()
 
-	// Ensure that the Role still exists.
-	role, err := b.role(req.Storage, roleName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to validate role %s during renewal:%s", roleName, err)
-	}
-	if role == nil {
-		return nil, fmt.Errorf("role %s does not exist during renewal", roleName)
-	}
+		// Ensure that the Role still exists.
+		role, err := b.role(ctx, req.Storage, roleName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to validate role %s during renewal:%s", roleName, err)
+		}
+		if role == nil {
+			return nil, fmt.Errorf("role %s does not exist during renewal", roleName)
+		}
 
-	// If 'Period' is set on the Role, the token should never expire.
-	// Replenish the TTL with 'Period's value.
-	if role.Period > time.Duration(0) {
-		// If 'Period' was updated after the token was issued,
-		// token will bear the updated 'Period' value as its TTL.
-		req.Auth.TTL = role.Period
-		return &logical.Response{Auth: req.Auth}, nil
+		resp := &logical.Response{Auth: req.Auth}
+		resp.Auth.TTL = role.TTL
+		resp.Auth.MaxTTL = role.MaxTTL
+		resp.Auth.Period = role.Period
+		return resp, nil
 	}
-
-	return framework.LeaseExtend(role.TTL, role.MaxTTL, b.System())(req, data)
 }
 
 const pathLoginHelpSyn = `Authenticates Kubernetes service accounts with Vault.`

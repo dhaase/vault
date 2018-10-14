@@ -1,6 +1,7 @@
 package kubeauth
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/rsa"
 	"crypto/x509"
@@ -11,8 +12,6 @@ import (
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
 )
-
-const warningACLReadAccess string = "Read access to this endpoint should be controlled via ACLs as it will return the configuration information as-is, including any passwords."
 
 // pathConfig returns the path configuration for CRUD operations on the backend
 // configuration.
@@ -55,8 +54,8 @@ extracted. Not every installation of Kuberentes exposes these keys.`,
 
 // pathConfigWrite handles create and update commands to the config
 func (b *kubeAuthBackend) pathConfigRead() framework.OperationFunc {
-	return func(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
-		if config, err := b.config(req.Storage); err != nil {
+	return func(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+		if config, err := b.config(ctx, req.Storage); err != nil {
 			return nil, err
 		} else if config == nil {
 			return nil, nil
@@ -66,7 +65,6 @@ func (b *kubeAuthBackend) pathConfigRead() framework.OperationFunc {
 				Data: map[string]interface{}{
 					"kubernetes_host":    config.Host,
 					"kubernetes_ca_cert": config.CACert,
-					"token_reviewer_jwt": config.TokenReviewerJWT,
 					"pem_keys":           config.PEMKeys,
 				},
 			}
@@ -78,7 +76,7 @@ func (b *kubeAuthBackend) pathConfigRead() framework.OperationFunc {
 
 // pathConfigWrite handles create and update commands to the config
 func (b *kubeAuthBackend) pathConfigWrite() framework.OperationFunc {
-	return func(req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
+	return func(ctx context.Context, req *logical.Request, data *framework.FieldData) (*logical.Response, error) {
 		host := data.Get("kubernetes_host").(string)
 		if host == "" {
 			return logical.ErrorResponse("no host provided"), nil
@@ -120,7 +118,7 @@ func (b *kubeAuthBackend) pathConfigWrite() framework.OperationFunc {
 			return nil, err
 		}
 
-		if err := req.Storage.Put(entry); err != nil {
+		if err := req.Storage.Put(ctx, entry); err != nil {
 			return nil, err
 		}
 		return nil, nil

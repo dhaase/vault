@@ -27,8 +27,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/coreos/etcd/pkg/pathutil"
 	"github.com/ugorji/go/codec"
+	"go.etcd.io/etcd/pkg/pathutil"
 )
 
 const (
@@ -653,8 +653,7 @@ func unmarshalHTTPResponse(code int, header http.Header, body []byte) (res *Resp
 	default:
 		err = unmarshalFailedKeysResponse(body)
 	}
-
-	return
+	return res, err
 }
 
 func unmarshalSuccessfulKeysResponse(header http.Header, body []byte) (*Response, error) {

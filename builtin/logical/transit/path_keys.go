@@ -1,6 +1,7 @@
 package transit
 
 import (
+	"context"
 	"crypto/elliptic"
 	"crypto/x509"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"golang.org/x/crypto/ed25519"
 
 	"github.com/fatih/structs"
+	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/vault/helper/keysutil"
 	"github.com/hashicorp/vault/logical"
 	"github.com/hashicorp/vault/logical/framework"
@@ -79,6 +81,13 @@ This allows for all the valid keys
 in the key ring to be exported.`,
 			},
 
+			"allow_plaintext_backup": &framework.FieldSchema{
+				Type: framework.TypeBool,
+				Description: `Enables taking a backup of the named
+key in plaintext format. Once set,
+this cannot be disabled.`,
+			},
+
 			"context": &framework.FieldSchema{
 				Type: framework.TypeString,
 				Description: `Base64 encoded context for key derivation.
@@ -99,9 +108,8 @@ return the public key for the given context.`,
 	}
 }
 
-func (b *backend) pathKeysList(
-	req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
-	entries, err := req.Storage.List("policy/")
+func (b *backend) pathKeysList(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+	entries, err := req.Storage.List(ctx, "policy/")
 	if err != nil {
 		return nil, err
 	}
@@ -109,28 +117,32 @@ func (b *backend) pathKeysList(
 	return logical.ListResponse(entries), nil
 }
 
-func (b *backend) pathPolicyWrite(
-	req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+func (b *backend) pathPolicyWrite(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
 	derived := d.Get("derived").(bool)
 	convergent := d.Get("convergent_encryption").(bool)
 	keyType := d.Get("type").(string)
 	exportable := d.Get("exportable").(bool)
+	allowPlaintextBackup := d.Get("allow_plaintext_backup").(bool)
 
 	if !derived && convergent {
 		return logical.ErrorResponse("convergent encryption requires derivation to be enabled"), nil
 	}
 
 	polReq := keysutil.PolicyRequest{
-		Storage:    req.Storage,
-		Name:       name,
-		Derived:    derived,
-		Convergent: convergent,
-		Exportable: exportable,
+		Upsert:               true,
+		Storage:              req.Storage,
+		Name:                 name,
+		Derived:              derived,
+		Convergent:           convergent,
+		Exportable:           exportable,
+		AllowPlaintextBackup: allowPlaintextBackup,
 	}
 	switch keyType {
 	case "aes256-gcm96":
 		polReq.KeyType = keysutil.KeyType_AES256_GCM96
+	case "chacha20-poly1305":
+		polReq.KeyType = keysutil.KeyType_ChaCha20_Poly1305
 	case "ecdsa-p256":
 		polReq.KeyType = keysutil.KeyType_ECDSA_P256
 	case "ed25519":
@@ -143,15 +155,15 @@ func (b *backend) pathPolicyWrite(
 		return logical.ErrorResponse(fmt.Sprintf("unknown key type %v", keyType)), logical.ErrInvalidRequest
 	}
 
-	p, lock, upserted, err := b.lm.GetPolicyUpsert(polReq)
-	if lock != nil {
-		defer lock.RUnlock()
-	}
+	p, upserted, err := b.lm.GetPolicy(ctx, polReq)
 	if err != nil {
 		return nil, err
 	}
 	if p == nil {
 		return nil, fmt.Errorf("error generating key: returned policy was nil")
+	}
+	if b.System().CachingDisabled() {
+		p.Unlock()
 	}
 
 	resp := &logical.Response{}
@@ -169,20 +181,23 @@ type asymKey struct {
 	CreationTime time.Time `json:"creation_time" structs:"creation_time" mapstructure:"creation_time"`
 }
 
-func (b *backend) pathPolicyRead(
-	req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+func (b *backend) pathPolicyRead(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
 
-	p, lock, err := b.lm.GetPolicyShared(req.Storage, name)
-	if lock != nil {
-		defer lock.RUnlock()
-	}
+	p, _, err := b.lm.GetPolicy(ctx, keysutil.PolicyRequest{
+		Storage: req.Storage,
+		Name:    name,
+	})
 	if err != nil {
 		return nil, err
 	}
 	if p == nil {
 		return nil, nil
 	}
+	if !b.System().CachingDisabled() {
+		p.Lock(false)
+	}
+	defer p.Unlock()
 
 	// Return the response
 	resp := &logical.Response{
@@ -195,11 +210,25 @@ func (b *backend) pathPolicyRead(
 			"min_encryption_version": p.MinEncryptionVersion,
 			"latest_version":         p.LatestVersion,
 			"exportable":             p.Exportable,
+			"allow_plaintext_backup": p.AllowPlaintextBackup,
 			"supports_encryption":    p.Type.EncryptionSupported(),
 			"supports_decryption":    p.Type.DecryptionSupported(),
 			"supports_signing":       p.Type.SigningSupported(),
 			"supports_derivation":    p.Type.DerivationSupported(),
 		},
+	}
+
+	if p.BackupInfo != nil {
+		resp.Data["backup_info"] = map[string]interface{}{
+			"time":    p.BackupInfo.Time,
+			"version": p.BackupInfo.Version,
+		}
+	}
+	if p.RestoreInfo != nil {
+		resp.Data["restore_info"] = map[string]interface{}{
+			"time":    p.RestoreInfo.Time,
+			"version": p.RestoreInfo.Version,
+		}
 	}
 
 	if p.Derived {
@@ -226,10 +255,10 @@ func (b *backend) pathPolicyRead(
 	}
 
 	switch p.Type {
-	case keysutil.KeyType_AES256_GCM96:
+	case keysutil.KeyType_AES256_GCM96, keysutil.KeyType_ChaCha20_Poly1305:
 		retKeys := map[string]int64{}
 		for k, v := range p.Keys {
-			retKeys[strconv.Itoa(k)] = v.DeprecatedCreationTime
+			retKeys[k] = v.DeprecatedCreationTime
 		}
 		resp.Data["keys"] = retKeys
 
@@ -252,7 +281,11 @@ func (b *backend) pathPolicyRead(
 					if len(context) == 0 {
 						key.PublicKey = ""
 					} else {
-						derived, err := p.DeriveKey(context, k)
+						ver, err := strconv.Atoi(k)
+						if err != nil {
+							return nil, errwrap.Wrapf(fmt.Sprintf("invalid version %q: {{err}}", k), err)
+						}
+						derived, err := p.DeriveKey(context, ver, 32)
 						if err != nil {
 							return nil, fmt.Errorf("failed to derive key to return public component")
 						}
@@ -271,7 +304,7 @@ func (b *backend) pathPolicyRead(
 				// API
 				derBytes, err := x509.MarshalPKIXPublicKey(v.RSAKey.Public())
 				if err != nil {
-					return nil, fmt.Errorf("error marshaling RSA public key: %v", err)
+					return nil, errwrap.Wrapf("error marshaling RSA public key: {{err}}", err)
 				}
 				pemBlock := &pem.Block{
 					Type:  "PUBLIC KEY",
@@ -284,7 +317,7 @@ func (b *backend) pathPolicyRead(
 				key.PublicKey = string(pemBytes)
 			}
 
-			retKeys[strconv.Itoa(k)] = structs.New(key).Map()
+			retKeys[k] = structs.New(key).Map()
 		}
 		resp.Data["keys"] = retKeys
 	}
@@ -292,12 +325,11 @@ func (b *backend) pathPolicyRead(
 	return resp, nil
 }
 
-func (b *backend) pathPolicyDelete(
-	req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
+func (b *backend) pathPolicyDelete(ctx context.Context, req *logical.Request, d *framework.FieldData) (*logical.Response, error) {
 	name := d.Get("name").(string)
 
 	// Delete does its own locking
-	err := b.lm.DeletePolicy(req.Storage, name)
+	err := b.lm.DeletePolicy(ctx, req.Storage, name)
 	if err != nil {
 		return logical.ErrorResponse(fmt.Sprintf("error deleting policy %s: %s", name, err)), err
 	}

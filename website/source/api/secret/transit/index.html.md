@@ -1,20 +1,20 @@
 ---
 layout: "api"
-page_title: "Transit Secret Backend - HTTP API"
+page_title: "Transit - Secrets Engines - HTTP API"
 sidebar_current: "docs-http-secret-transit"
 description: |-
-  This is the API documentation for the Vault Transit secret backend.
+  This is the API documentation for the Vault Transit secrets engine.
 ---
 
-# Transit Secret Backend HTTP API
+# Transit Secrets Engine (API)
 
-This is the API documentation for the Vault Transit secret backend. For general
-information about the usage and operation of the Transit backend, please see the
-[Vault Transit backend documentation](/docs/secrets/transit/index.html).
+This is the API documentation for the Vault Transit secrets engine. For general
+information about the usage and operation of the Transit secrets engine, please
+see the [transit documentation](/docs/secrets/transit/index.html).
 
-This documentation assumes the Transit backend is mounted at the `/transit`
-path in Vault. Since it is possible to mount secret backends at any location,
-please update your API calls accordingly.
+This documentation assumes the transit secrets engine is enabled at the
+`/transit` path in Vault. Since it is possible to enable secrets engines at any
+location, please update your API calls accordingly.
 
 ## Create Key
 
@@ -34,24 +34,30 @@ values set here cannot be changed after key creation.
   convergent encryption, where the same plaintext creates the same ciphertext.
   This requires _derived_ to be set to `true`. When enabled, each
   encryption(/decryption/rewrap/datakey) operation will derive a `nonce` value
-  rather than randomly generate it. Note that while this is useful for
-  particular situations, all nonce values used with a given context value **must
-  be unique** or it will compromise the security of your key, and the key space
-  for nonces is 96 bit -- not as large as the AES key itself.
+  rather than randomly generate it.
 
 - `derived` `(bool: false)` – Specifies if key derivation is to be used. If
   enabled, all encrypt/decrypt requests to this named key must provide a context
   which is used for key derivation.
 
-- `exportable` `(bool: false)` – Specifies if the raw key is exportable.
+- `exportable` `(bool: false)` -  Enables keys to be exportable. This
+  allows for all the valid keys in the key ring to be exported. Once set, this
+  cannot be disabled.
+
+- `allow_plaintext_backup` `(bool: false)` - If set, enables taking backup of
+  named key in the plaintext format. Once set, this cannot be disabled.
 
 - `type` `(string: "aes256-gcm96")` – Specifies the type of key to create. The
   currently-supported types are:
 
-    - `aes256-gcm96` – AES-256 wrapped with GCM using a 12-byte nonce size
-      (symmetric, supports derivation)
+    - `aes256-gcm96` – AES-256 wrapped with GCM using a 96-bit nonce size AEAD
+      (symmetric, supports derivation and convergent encryption)
+    - `chacha20-poly1305` – ChaCha20-Poly1305 AEAD (symmetric, supports
+      derivation and convergent encryption)
+    - `ed25519` – ED25519 (asymmetric, supports derivation). When using
+      derivation, a sign operation with the same context will derive the same
+      key and signature; this is a signing analogue to `convergent_encryption`.
     - `ecdsa-p256` – ECDSA using the P-256 elliptic curve (asymmetric)
-    - `ed25519` – ED25519 (asymmetric, supports derivation)
     - `rsa-2048` - RSA with bit size of 2048 (asymmetric)
     - `rsa-4096` - RSA with bit size of 4096 (asymmetric)
 
@@ -71,7 +77,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/keys/my-key
+    http://127.0.0.1:8200/v1/transit/keys/my-key
 ```
 
 ## Read Key
@@ -96,7 +102,7 @@ type.
 ```
 $ curl \
     --header "X-Vault-Token: ..." \
-    https://vault.rocks/v1/transit/keys/my-key
+    http://127.0.0.1:8200/v1/transit/keys/my-key
 ```
 
 ### Sample Response
@@ -108,6 +114,7 @@ $ curl \
     "deletion_allowed": false,
     "derived": false,
     "exportable": false,
+    "allow_plaintext_backup": false,
     "keys": {
       "1": 1442851412
     },
@@ -130,7 +137,6 @@ actual keys themselves).
 | Method   | Path                         | Produces               |
 | :------- | :--------------------------- | :--------------------- |
 | `LIST`   | `/transit/keys`              | `200 application/json` |
-| `GET`    | `/transit/keys?list=true`    | `200 application/json` |
 
 ### Sample Request
 
@@ -138,7 +144,7 @@ actual keys themselves).
 $ curl \
     --header "X-Vault-Token: ..." \
     --request LIST \
-    https://vault.rocks/v1/transit/keys
+    http://127.0.0.1:8200/v1/transit/keys
 ```
 
 ### Sample Response
@@ -176,7 +182,7 @@ catastrophic operation, the `deletion_allowed` tunable must be set in the key's
 $ curl \
     --header "X-Vault-Token: ..." \
     --request DELETE \
-    https://vault.rocks/v1/transit/keys/my-key
+    http://127.0.0.1:8200/v1/transit/keys/my-key
 ```
 
 ## Update Key Configuration
@@ -202,8 +208,15 @@ are returned during a read operation on the named key.)
   Must be `0` (which will use the latest version) or a value greater or equal
   to `min_decryption_version`.
 
-- `deletion_allowed` `(bool: false)`- Specifies if the key is allowed to be
+- `deletion_allowed` `(bool: false)` - Specifies if the key is allowed to be
   deleted.
+
+- `exportable` `(bool: false)` -  Enables keys to be exportable. This
+  allows for all the valid keys in the key ring to be exported. Once set, this
+  cannot be disabled.
+
+- `allow_plaintext_backup` `(bool: false)` - If set, enables taking backup of
+  named key in the plaintext format. Once set, this cannot be disabled.
 
 ### Sample Payload
 
@@ -220,7 +233,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/keys/my-key/config
+    http://127.0.0.1:8200/v1/transit/keys/my-key/config
 ```
 
 ## Rotate Key
@@ -241,7 +254,7 @@ decryption operations.
 $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
-    https://vault.rocks/v1/transit/keys/my-key/rotate
+    http://127.0.0.1:8200/v1/transit/keys/my-key/rotate
 ```
 
 ## Export Key
@@ -278,7 +291,7 @@ be valid.
 ```
 $ curl \
     --header "X-Vault-Token: ..." \
-    https://vault.rocks/v1/transit/export/encryption-key/my-key/1
+    http://127.0.0.1:8200/v1/transit/export/encryption-key/my-key/1
 ```
 
 ### Sample Response
@@ -297,13 +310,13 @@ $ curl \
 
 ## Encrypt Data
 
-This endpoint encrypts the provided plaintext using the named key. Currently,
-this only supports symmetric keys. This path supports the `create` and `update`
-policy capabilities as follows: if the user has the `create` capability for this
-endpoint in their policies, and the key does not exist, it will be upserted with
-default values (whether the key requires derivation depends on whether the
-context parameter is empty or not). If the user only has `update` capability and
-the key does not exist, an error will be returned.
+This endpoint encrypts the provided plaintext using the named key. This path
+supports the `create` and `update` policy capabilities as follows: if the user
+has the `create` capability for this endpoint in their policies, and the key
+does not exist, it will be upserted with default values (whether the key
+requires derivation depends on whether the context parameter is empty or not).
+If the user only has `update` capability and the key does not exist, an error
+will be returned.
 
 | Method   | Path                         | Produces               |
 | :------- | :--------------------------- | :--------------------- |
@@ -351,8 +364,7 @@ the key does not exist, an error will be returned.
 
 - `type` `(string: "aes256-gcm96")` –This parameter is required when encryption
   key is expected to be created. When performing an upsert operation, the type
-  of key to create. Currently, "aes256-gcm96" (symmetric) is the only type
-  supported.
+  of key to create.
 
 - `convergent_encryption` `(string: "")` – This parameter will only be used when
   a key is expected to be created.  Whether to support convergent encryption.
@@ -379,7 +391,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/encrypt/my-key
+    http://127.0.0.1:8200/v1/transit/encrypt/my-key
 ```
 
 ### Sample Response
@@ -394,8 +406,7 @@ $ curl \
 
 ## Decrypt Data
 
-This endpoint decrypts the provided ciphertext using the named key. Currently,
-this only supports symmetric keys.
+This endpoint decrypts the provided ciphertext using the named key.
 
 | Method   | Path                         | Produces               |
 | :------- | :--------------------------- | :--------------------- |
@@ -449,7 +460,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/decrypt/my-key
+    http://127.0.0.1:8200/v1/transit/decrypt/my-key
 ```
 
 ### Sample Response
@@ -524,7 +535,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/rewrap/my-key
+    http://127.0.0.1:8200/v1/transit/rewrap/my-key
 ```
 
 ### Sample Response
@@ -588,7 +599,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/datakey/plaintext/my-key
+    http://127.0.0.1:8200/v1/transit/datakey/plaintext/my-key
 ```
 
 ### Sample Response
@@ -633,7 +644,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/random/164
+    http://127.0.0.1:8200/v1/transit/random/164
 ```
 
 ### Sample Response
@@ -685,7 +696,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/hash/sha2-512
+    http://127.0.0.1:8200/v1/transit/hash/sha2-512
 ```
 
 ### Sample Response
@@ -744,7 +755,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/hmac/my-key/sha2-512
+    http://127.0.0.1:8200/v1/transit/hmac/my-key/sha2-512
 ```
 
 ### Sample Response
@@ -765,7 +776,7 @@ supports signing.
 
 | Method   | Path                         | Produces               |
 | :------- | :--------------------------- | :--------------------- |
-| `POST`   | `/transit/sign/:name(/:algorithm)` | `200 application/json` |
+| `POST`   | `/transit/sign/:name(/:hash_algorithm)` | `200 application/json` |
 
 ### Parameters
 
@@ -776,12 +787,11 @@ supports signing.
   signing. If not set, uses the latest version. Must be greater than or equal
   to the key's `min_encryption_version`, if set.
 
-- `algorithm` `(string: "sha2-256")` – Specifies the hash algorithm to use for
+- `hash_algorithm` `(string: "sha2-256")` – Specifies the hash algorithm to use for
   supporting key types (notably, not including `ed25519` which specifies its
   own hash algorithm). This can also be specified as part of the URL.
   Currently-supported algorithms are:
 
-    - `none`
     - `sha2-224`
     - `sha2-256`
     - `sha2-384`
@@ -793,9 +803,20 @@ supports signing.
    Required if key derivation is enabled; currently only available with ed25519
    keys.
 
- - `prehashed` `(bool: false)` - Set to `true` when the input is already
-   hashed. If the key type is `rsa-2048` or `rsa-4096`, then the algorithm used
-   to hash the input should be indicated by the `algorithm` parameter.
+- `prehashed` `(bool: false)` - Set to `true` when the input is already hashed.
+  If the key type is `rsa-2048` or `rsa-4096`, then the algorithm used to hash
+  the input should be indicated by the `hash_algorithm` parameter.  Just as the
+  value to sign should be the base64-encoded representation of the exact binary
+  data you want signed, when set, `input` is expected to be base64-encoded
+  binary hashed data, not hex-formatted. (As an example, on the command line,
+  you could generate a suitable input via `openssl dgst -sha256 -binary |
+  base64`.)
+
+- `signature_algorithm` `(string: "pss")` – When using a RSA key, specifies the RSA
+  signature algorithm to use for signing. Supported signature types are:
+
+    - `pss`
+    - `pkcs1v15`
 
 
 ### Sample Payload
@@ -813,7 +834,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/sign/my-key/sha2-512
+    http://127.0.0.1:8200/v1/transit/sign/my-key/sha2-512
 ```
 
 ### Sample Response
@@ -833,17 +854,16 @@ data.
 
 | Method   | Path                         | Produces               |
 | :------- | :--------------------------- | :--------------------- |
-| `POST`   | `/transit/verify/:name(/:algorithm)` | `200 application/json` |
+| `POST`   | `/transit/verify/:name(/:hash_algorithm)` | `200 application/json` |
 
 ### Parameters
 
 - `name` `(string: <required>)` – Specifies the name of the encryption key that
   was used to generate the signature or HMAC.
 
-- `algorithm` `(string: "sha2-256")` – Specifies the hash algorithm to use. This
+- `hash_algorithm` `(string: "sha2-256")` – Specifies the hash algorithm to use. This
   can also be specified as part of the URL. Currently-supported algorithms are:
 
-    - `none`
     - `sha2-224`
     - `sha2-256`
     - `sha2-384`
@@ -859,13 +879,20 @@ data.
   `/transit/hmac` function. Either this must be supplied or `signature` must be
   supplied.
 
- - `context` `(string: "")` - Base64 encoded context for key derivation.
+- `context` `(string: "")` - Base64 encoded context for key derivation.
    Required if key derivation is enabled; currently only available with ed25519
    keys.
 
- - `prehashed` `(bool: false)` - Set to `true` when the input is already
+- `prehashed` `(bool: false)` - Set to `true` when the input is already
    hashed. If the key type is `rsa-2048` or `rsa-4096`, then the algorithm used
-   to hash the input should be indicated by the `algorithm` parameter.
+   to hash the input should be indicated by the `hash_algorithm` parameter.
+
+- `signature_algorithm` `(string: "pss")` – When using a RSA key, specifies the RSA
+  signature algorithm to use for signature verification. Supported signature types
+  are:
+
+    - `pss`
+    - `pkcs1v15`
 
 ### Sample Payload
 
@@ -883,7 +910,7 @@ $ curl \
     --header "X-Vault-Token: ..." \
     --request POST \
     --data @payload.json \
-    https://vault.rocks/v1/transit/verify/my-key/sha2-512
+    http://127.0.0.1:8200/v1/transit/verify/my-key/sha2-512
 ```
 
 ### Sample Response
@@ -894,4 +921,79 @@ $ curl \
     "valid": true
   }
 }
+```
+
+## Backup Key
+
+This endpoint returns a plaintext backup of a named key. The backup contains all
+the configuration data and keys of all the versions along with the HMAC key.
+The response from this endpoint can be used with the `/restore` endpoint to
+restore the key.
+
+| Method  | Path                    | Produces               |
+| :------ | :---------------------- | :--------------------- |
+| `GET`   | `/transit/backup/:name` | `200 application/json` |
+
+### Parameters
+
+ - `name` `(string: <required>)` - Name of the key.
+
+### Sample Request
+
+```
+$ curl \
+    --header "X-Vault-Token: ..." \
+    http://127.0.0.1:8200/v1/transit/backup/aes
+```
+
+### Sample Response
+
+```json
+{
+  "data": {
+    "backup": "eyJwb2xpY3kiOnsibmFtZSI6ImFlcyIsImtleXMiOnsiMSI6eyJrZXkiOiJXK3k4Z0dOMHdiTDJLOU95NXFPN1laMGtjdzMvR0ZiNWM4STBzdlNMMnFNPSIsImhtYWNfa2V5IjoiUDBTcjh1YTJaZERNUTdPd2h4RGp1Z0U5d0JSR3Q2QXl6K0t4TzN5Z2M5ST0iLCJ0aW1lIjoiMjAxNy0xMi0wOFQxMTo1MDowOC42MTM4MzctMDU6MDAiLCJlY194IjpudWxsLCJlY195IjpudWxsLCJlY19kIjpudWxsLCJyc2Ffa2V5IjpudWxsLCJwdWJsaWNfa2V5IjoiIiwiY3JlYXRpb25fdGltZSI6MTUxMjc1MTgwOH19LCJkZXJpdmVkIjpmYWxzZSwia2RmIjowLCJjb252ZXJnZW50X2VuY3J5cHRpb24iOmZhbHNlLCJleHBvcnRhYmxlIjpmYWxzZSwibWluX2RlY3J5cHRpb25fdmVyc2lvbiI6MSwibWluX2VuY3J5cHRpb25fdmVyc2lvbiI6MCwibGF0ZXN0X3ZlcnNpb24iOjEsImFyY2hpdmVfdmVyc2lvbiI6MSwiZGVsZXRpb25fYWxsb3dlZCI6ZmFsc2UsImNvbnZlcmdlbnRfdmVyc2lvbiI6MCwidHlwZSI6MCwiYmFja3VwX2luZm8iOnsidGltZSI6IjIwMTctMTItMDhUMTE6NTA6MjkuMjI4MTU3LTA1OjAwIiwidmVyc2lvbiI6MX0sInJlc3RvcmVfaW5mbyI6bnVsbH0sImFyY2hpdmVkX2tleXMiOnsia2V5cyI6W3sia2V5IjpudWxsLCJobWFjX2tleSI6bnVsbCwidGltZSI6IjAwMDEtMDEtMDFUMDA6MDA6MDBaIiwiZWNfeCI6bnVsbCwiZWNfeSI6bnVsbCwiZWNfZCI6bnVsbCwicnNhX2tleSI6bnVsbCwicHVibGljX2tleSI6IiIsImNyZWF0aW9uX3RpbWUiOjB9LHsia2V5IjoiVyt5OGdHTjB3YkwySzlPeTVxTzdZWjBrY3czL0dGYjVjOEkwc3ZTTDJxTT0iLCJobWFjX2tleSI6IlAwU3I4dWEyWmRETVE3T3doeERqdWdFOXdCUkd0NkF5eitLeE8zeWdjOUk9IiwidGltZSI6IjIwMTctMTItMDhUMTE6NTA6MDguNjEzODM3LTA1OjAwIiwiZWNfeCI6bnVsbCwiZWNfeSI6bnVsbCwiZWNfZCI6bnVsbCwicnNhX2tleSI6bnVsbCwicHVibGljX2tleSI6IiIsImNyZWF0aW9uX3RpbWUiOjE1MTI3NTE4MDh9XX19Cg=="
+  }
+}
+```
+
+## Restore Key
+
+This endpoint restores the backup as a named key. This will restore the key
+configurations and all the versions of the named key along with HMAC keys. The
+input to this endpoint should be the output of `/backup` endpoint.
+
+ ~> For safety, by default the backend will refuse to restore to an existing
+ key. If you want to reuse a key name, it is recommended you delete the key
+ before restoring. It is a good idea to attempt restoring to a different key
+ name first to verify that the operation successfully completes. 
+
+| Method   | Path                        | Produces               |
+| :------- | :-------------------------- | :--------------------- |
+| `POST`   | `/transit/restore(/:name)`  | `204 (empty body)`     |
+
+### Parameters
+
+ - `backup` `(string: <required>)` - Backed up key data to be restored. This
+   should be the output from the `/backup` endpoint.
+
+ - `name` `(string: <optional>)` - If set, this will be the name of the
+   restored key.
+
+ - `force` `(bool: false)` - If set, force the restore to proceed even if a key
+   by this name already exists.
+
+### Sample Payload
+
+```json
+  "backup": "eyJwb2xpY3kiOnsibmFtZSI6ImFlcyIsImtleXMiOnsiMSI6eyJrZXkiOiJXK3k4Z0dOMHdiTDJLOU95NXFPN1laMGtjdzMvR0ZiNWM4STBzdlNMMnFNPSIsImhtYWNfa2V5IjoiUDBTcjh1YTJaZERNUTdPd2h4RGp1Z0U5d0JSR3Q2QXl6K0t4TzN5Z2M5ST0iLCJ0aW1lIjoiMjAxNy0xMi0wOFQxMTo1MDowOC42MTM4MzctMDU6MDAiLCJlY194IjpudWxsLCJlY195IjpudWxsLCJlY19kIjpudWxsLCJyc2Ffa2V5IjpudWxsLCJwdWJsaWNfa2V5IjoiIiwiY3JlYXRpb25fdGltZSI6MTUxMjc1MTgwOH19LCJkZXJpdmVkIjpmYWxzZSwia2RmIjowLCJjb252ZXJnZW50X2VuY3J5cHRpb24iOmZhbHNlLCJleHBvcnRhYmxlIjpmYWxzZSwibWluX2RlY3J5cHRpb25fdmVyc2lvbiI6MSwibWluX2VuY3J5cHRpb25fdmVyc2lvbiI6MCwibGF0ZXN0X3ZlcnNpb24iOjEsImFyY2hpdmVfdmVyc2lvbiI6MSwiZGVsZXRpb25fYWxsb3dlZCI6ZmFsc2UsImNvbnZlcmdlbnRfdmVyc2lvbiI6MCwidHlwZSI6MCwiYmFja3VwX2luZm8iOnsidGltZSI6IjIwMTctMTItMDhUMTE6NTA6MjkuMjI4MTU3LTA1OjAwIiwidmVyc2lvbiI6MX0sInJlc3RvcmVfaW5mbyI6bnVsbH0sImFyY2hpdmVkX2tleXMiOnsia2V5cyI6W3sia2V5IjpudWxsLCJobWFjX2tleSI6bnVsbCwidGltZSI6IjAwMDEtMDEtMDFUMDA6MDA6MDBaIiwiZWNfeCI6bnVsbCwiZWNfeSI6bnVsbCwiZWNfZCI6bnVsbCwicnNhX2tleSI6bnVsbCwicHVibGljX2tleSI6IiIsImNyZWF0aW9uX3RpbWUiOjB9LHsia2V5IjoiVyt5OGdHTjB3YkwySzlPeTVxTzdZWjBrY3czL0dGYjVjOEkwc3ZTTDJxTT0iLCJobWFjX2tleSI6IlAwU3I4dWEyWmRETVE3T3doeERqdWdFOXdCUkd0NkF5eitLeE8zeWdjOUk9IiwidGltZSI6IjIwMTctMTItMDhUMTE6NTA6MDguNjEzODM3LTA1OjAwIiwiZWNfeCI6bnVsbCwiZWNfeSI6bnVsbCwiZWNfZCI6bnVsbCwicnNhX2tleSI6bnVsbCwicHVibGljX2tleSI6IiIsImNyZWF0aW9uX3RpbWUiOjE1MTI3NTE4MDh9XX19Cg=="
+```
+
+### Sample Request
+
+```
+$ curl \
+    --header "X-Vault-Token: ..." \
+    --request POST \
+    --data @payload.json \
+    http://127.0.0.1:8200/v1/transit/restore
 ```

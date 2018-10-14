@@ -3,6 +3,7 @@ package govalidator
 import (
 	"reflect"
 	"regexp"
+	"sort"
 	"sync"
 )
 
@@ -15,7 +16,26 @@ type CustomTypeValidator func(i interface{}, o interface{}) bool
 
 // ParamValidator is a wrapper for validator functions that accepts additional parameters.
 type ParamValidator func(str string, params ...string) bool
-type tagOptionsMap map[string]string
+type tagOptionsMap map[string]tagOption
+
+func (t tagOptionsMap) orderedKeys() []string {
+	var keys []string
+	for k := range t {
+		keys = append(keys, k)
+	}
+
+	sort.Slice(keys, func(a, b int) bool {
+		return t[keys[a]].order < t[keys[b]].order
+	})
+
+	return keys
+}
+
+type tagOption struct {
+	name               string
+	customErrorMessage string
+	order              int
+}
 
 // UnsupportedTypeError is a wrapper for reflect.Type
 type UnsupportedTypeError struct {
@@ -34,6 +54,7 @@ var ParamTagMap = map[string]ParamValidator{
 	"stringlength": StringLength,
 	"matches":      StringMatches,
 	"in":           isInRaw,
+	"rsapub":       IsRsaPub,
 }
 
 // ParamTagRegexMap maps param tags to their respective regexes.
@@ -44,6 +65,7 @@ var ParamTagRegexMap = map[string]*regexp.Regexp{
 	"stringlength": regexp.MustCompile("^stringlength\\((\\d+)\\|(\\d+)\\)$"),
 	"in":           regexp.MustCompile(`^in\((.*)\)`),
 	"matches":      regexp.MustCompile(`^matches\((.+)\)$`),
+	"rsapub":       regexp.MustCompile("^rsapub\\((\\d+)\\)$"),
 }
 
 type customTypeTagMap struct {
